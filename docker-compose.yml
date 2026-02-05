@@ -1,0 +1,117 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${POSTGRES_DB:-k1db}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d ${POSTGRES_DB:-k1db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  llm-service:
+    build:
+      context: .
+      dockerfile: llm_service/Dockerfile
+    container_name: llm-service
+    ports:
+      - "8002:8002"
+    environment:
+      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: backend
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-k1db}
+      - RAG_API_URL=http://rag-api:8000
+      - LLM_SERVICE_URL=http://llm-service:8002
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rag-api:
+        condition: service_started
+      llm-service:
+        condition: service_started
+    restart: unless-stopped
+
+  admin-panel:
+    build:
+      context: ./admin_panel
+      dockerfile: Dockerfile
+    container_name: admin-panel
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+      - rag-api
+    restart: unless-stopped
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: telegram_bot/Dockerfile
+    container_name: telegram-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - BACKEND_API_URL=http://backend:8001
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  rag-api:
+    build:
+      context: .
+      dockerfile: RAG/Dockerfile
+    container_name: rag-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Сохраняем данные ChromaDB
+      - ./data/chroma_db:/app/data/chroma_db
+      # Сохраняем кэш моделей HuggingFace
+      - ./data/models:/app/data/models
+      # Промпты (если нужно редактировать без пересборки)
+      - ./RAG/api/prompts:/app/RAG/api/prompts:ro
+    environment:
+      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
+      - PYTHONUNBUFFERED=1
+      - HF_HOME=/app/data/models
+      - ANONYMIZED_TELEMETRY=False
+      # Отключаем автоматическую загрузку оптимизированных моделей
+      - TRANSFORMERS_OFFLINE=0
+      - HF_HUB_DISABLE_EXPERIMENTAL_WARNING=1
+      # Отключаем ONNX и OpenVINO оптимизации
+      - ONNXRUNTIME_DISABLE_OPTIMIZATION=1
+      - DISABLE_ONNX=1
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/\")' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+

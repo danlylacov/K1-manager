@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data
+data/
+*.db
+*.sqlite3
+chroma_db/
+
+# Models cache (будет в volume)
+.cache/
+*.pth
+*.pt
+
+# Git
+.git/
+.gitignore
+
+# Docker
+RAG/Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+*.md
+README*
+
+# OS
+.DS_Store
+Thumbs.db
+
