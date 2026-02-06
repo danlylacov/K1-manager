@@ -148,3 +148,10 @@ class CurrentUserResponse(BaseModel):
     username: str
     role: str
 
+
+class AdminNotificationRequest(BaseModel):
+    notification_type: str
+    telegram_id: int
+    username: Optional[str] = None
+    phone: Optional[str] = None
+

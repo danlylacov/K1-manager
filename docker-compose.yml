@@ -44,6 +44,8 @@ services:
       - RAG_API_URL=http://rag-api:8000
       - LLM_SERVICE_URL=http://llm-service:8002
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ADMIN_GROUP_CHAT_ID=${ADMIN_GROUP_CHAT_ID}
+      - SITE_URL=${SITE_URL:-http://localhost:3000}
       - ADMIN_DEV_USERNAME=${ADMIN_DEV_USERNAME}
       - ADMIN_DEV_PASSWORD=${ADMIN_DEV_PASSWORD}
       - SECRET_KEY=${SECRET_KEY}
@@ -77,6 +79,7 @@ services:
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - BACKEND_API_URL=http://backend:8001
+      - ADMIN_GROUP_CHAT_ID=${ADMIN_GROUP_CHAT_ID}
       - PYTHONUNBUFFERED=1
     depends_on:
       - backend
