@@ -25,10 +25,15 @@ class EmbeddingService:
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
             os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'
 
+            # Определяем путь к кэшу моделей из переменной окружения
+            cache_dir = os.getenv('HF_HOME', '/app/data/models')
+            
             print(f"Загрузка модели {self.config.model_name}...")
+            print(f"Используется кэш: {cache_dir}")
             self._model = SentenceTransformer(
                 self.config.model_name,
-                device="cpu"
+                device="cpu",
+                cache_folder=cache_dir
             )
 
 

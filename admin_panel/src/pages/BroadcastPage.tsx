@@ -1,12 +1,13 @@
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { usersApi } from '../services/usersApi'
 import { messagesApi } from '../services/messagesApi'
+import EmojiPicker from '../components/EmojiPicker'
 import { useState } from 'react'
 
 export default function BroadcastPage() {
   const [selectedUsers, setSelectedUsers] = useState<Set<number>>(new Set())
   const [messageText, setMessageText] = useState('')
-  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [scheduledAt, setScheduledAt] = useState('')
   const [broadcastType, setBroadcastType] = useState<'immediate' | 'scheduled'>('immediate')
   
@@ -23,19 +24,19 @@ export default function BroadcastPage() {
           telegram_ids: telegramIds,
           text: messageText,
           scheduled_at: scheduledAt,
-          file: selectedFile || undefined,
+          files: selectedFiles.length > 0 ? selectedFiles : undefined,
         })
       } else {
         await messagesApi.broadcast({
           telegram_ids: telegramIds,
           text: messageText,
-          file: selectedFile || undefined,
+          files: selectedFiles.length > 0 ? selectedFiles : undefined,
         })
       }
     },
     onSuccess: () => {
       setMessageText('')
-      setSelectedFile(null)
+      setSelectedFiles([])
       setScheduledAt('')
       setSelectedUsers(new Set())
       alert('Рассылка отправлена!')
@@ -139,27 +140,66 @@ export default function BroadcastPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            if (selectedUsers.size > 0 && (messageText.trim() || selectedFile)) {
+            if (selectedUsers.size > 0 && (messageText.trim() || selectedFiles.length > 0)) {
               broadcastMutation.mutate()
             }
           }}
           className="space-y-4"
         >
-          <textarea
-            value={messageText}
-            onChange={(e) => setMessageText(e.target.value)}
-            placeholder="Введите текст сообщения..."
-            className="input-field"
-            rows={5}
-          />
+          <div className="relative">
+            <textarea
+              value={messageText}
+              onChange={(e) => setMessageText(e.target.value)}
+              placeholder="Введите текст сообщения..."
+              className="input-field pr-10"
+              rows={5}
+            />
+            <div className="absolute bottom-2 right-2">
+              <EmojiPicker
+                onEmojiSelect={(emoji) => {
+                  setMessageText((prev) => prev + emoji)
+                }}
+              />
+            </div>
+          </div>
           <div>
             <input
               type="file"
-              onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+              multiple
+              accept="image/*"
+              onChange={(e) => {
+                if (e.target.files) {
+                  const filesArray = Array.from(e.target.files)
+                  setSelectedFiles((prev) => [...prev, ...filesArray])
+                }
+              }}
               className="input-field"
             />
-            {selectedFile && (
-              <p className="text-sm text-gray-600 mt-1">Выбран файл: {selectedFile.name}</p>
+            {selectedFiles.length > 0 && (
+              <div className="mt-2 space-y-2">
+                {selectedFiles.map((file, index) => (
+                  <div key={index} className="flex items-center space-x-2 p-2 bg-gray-100 rounded">
+                    {file.type.startsWith('image/') && (
+                      <img
+                        src={URL.createObjectURL(file)}
+                        alt={file.name}
+                        className="w-16 h-16 object-cover rounded"
+                      />
+                    )}
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-700">{file.name}</p>
+                      <p className="text-xs text-gray-500">{(file.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFiles((prev) => prev.filter((_, i) => i !== index))}
+                      className="text-red-600 hover:text-red-800"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
           <button
@@ -167,7 +207,7 @@ export default function BroadcastPage() {
             disabled={
               broadcastMutation.isPending ||
               selectedUsers.size === 0 ||
-              (!messageText.trim() && !selectedFile) ||
+              (!messageText.trim() && selectedFiles.length === 0) ||
               (broadcastType === 'scheduled' && !scheduledAt)
             }
             className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"

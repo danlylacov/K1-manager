@@ -8,6 +8,7 @@ export const backendApi = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // Для поддержки сессий (cookies)
 });
 
 export const ragApi = axios.create({
@@ -24,6 +25,7 @@ export const backendApiFormData = axios.create({
   headers: {
     'Content-Type': 'multipart/form-data',
   },
+  withCredentials: true, // Для поддержки сессий (cookies)
 });
 
 export const ragApiFormData = axios.create({

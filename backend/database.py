@@ -91,10 +91,78 @@ def migrate_db():
             conn.execute(text("CREATE INDEX idx_scheduled_broadcasts_sent ON scheduled_broadcasts(sent)"))
             conn.commit()
             print("Миграция: создана таблица scheduled_broadcasts")
+        
+        # Создаем таблицу admin_users если её нет
+        result = conn.execute(text("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_name='admin_users'
+        """))
+        if result.fetchone() is None:
+            conn.execute(text("""
+                CREATE TABLE admin_users (
+                    id SERIAL PRIMARY KEY,
+                    username VARCHAR UNIQUE NOT NULL,
+                    password_hash VARCHAR NOT NULL,
+                    role VARCHAR NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("CREATE INDEX idx_admin_users_username ON admin_users(username)"))
+            conn.commit()
+            print("Миграция: создана таблица admin_users")
+
+
+def create_dev_user():
+    """Создание dev пользователя из переменных окружения"""
+    from backend.models import AdminUser
+    from passlib.context import CryptContext
+    
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    
+    dev_username = os.getenv("ADMIN_DEV_USERNAME")
+    dev_password = os.getenv("ADMIN_DEV_PASSWORD")
+    
+    if not dev_username or not dev_password:
+        print("ADMIN_DEV_USERNAME и ADMIN_DEV_PASSWORD не установлены, dev пользователь не создан")
+        return
+    
+    db = SessionLocal()
+    try:
+        # Проверяем, существует ли уже dev пользователь
+        existing_user = db.query(AdminUser).filter(AdminUser.username == dev_username).first()
+        if existing_user:
+            print(f"Dev пользователь {dev_username} уже существует")
+            return
+        
+        # Создаем нового dev пользователя
+        # Bcrypt ограничивает пароль 72 байтами, обрезаем заранее
+        password_bytes = dev_password.encode('utf-8')
+        if len(password_bytes) > 72:
+            # Обрезаем до 72 байт и декодируем обратно
+            password_to_hash = password_bytes[:72].decode('utf-8', errors='ignore')
+        else:
+            password_to_hash = dev_password
+        
+        password_hash = pwd_context.hash(password_to_hash)
+        dev_user = AdminUser(
+            username=dev_username,
+            password_hash=password_hash,
+            role="dev"
+        )
+        db.add(dev_user)
+        db.commit()
+        print(f"Dev пользователь {dev_username} создан успешно")
+    except Exception as e:
+        print(f"Ошибка при создании dev пользователя: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def init_db():
     from backend.models import Base
     Base.metadata.create_all(bind=engine)
     migrate_db()
+    create_dev_user()
 

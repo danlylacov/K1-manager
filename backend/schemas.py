@@ -109,3 +109,42 @@ class ScheduleBroadcastRequest(BaseModel):
     text: str
     scheduled_at: datetime
 
+
+# Схемы для аутентификации и управления админ-пользователями
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    username: str
+    role: str
+    message: str
+
+
+class AdminUserCreate(BaseModel):
+    username: str
+    password: str
+    role: str  # dev, admin, manager
+
+
+class AdminUserUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+
+
+class AdminUserResponse(BaseModel):
+    id: int
+    username: str
+    role: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CurrentUserResponse(BaseModel):
+    username: str
+    role: str
+

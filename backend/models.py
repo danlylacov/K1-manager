@@ -51,3 +51,13 @@ class ScheduledBroadcast(Base):
     sent = Column(Integer, default=0)  # 0 - not sent, 1 - sent
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class AdminUser(Base):
+    __tablename__ = "admin_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False)  # dev, admin, manager
+    created_at = Column(DateTime, default=datetime.utcnow)
+

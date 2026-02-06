@@ -2,6 +2,7 @@ from typing import List, Dict, Optional
 import chromadb
 from pathlib import Path
 import numpy as np
+import os
 from RAG.rag.config import RetrievalConfig
 
 
@@ -9,14 +10,9 @@ class VectorStore:
     """Класс для работы с векторной базой данных"""
 
     def __init__(self, db_path: str = None, collection_name: str = "k1_about", config: RetrievalConfig = None):
-        # Используем абсолютный путь из конфигурации, если не указан
+        # Используем переменную окружения или путь по умолчанию
         if db_path is None:
-            try:
-                from RAG_API.app.core.config import CHROMA_DB_PATH
-                db_path = str(CHROMA_DB_PATH)
-            except ImportError:
-                # Fallback на относительный путь
-                db_path = str(Path(__file__).parent.parent.parent / "chroma_db")
+            db_path = os.getenv('CHROMA_DB_PATH', '/app/data/chroma_db')
         
         # Убеждаемся, что путь абсолютный
         db_path = str(Path(db_path).resolve())

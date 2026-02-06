@@ -1,4 +1,5 @@
 from typing import Dict
+import os
 from RAG.rag.config import RAGConfig, DEFAULT_CONFIG
 from RAG.rag.document_processor import document_to_markdown, split_document
 from RAG.rag.embedding_service import EmbeddingService
@@ -17,13 +18,8 @@ class RAGPipeline:
         self.config = config
         self.embedding_service = EmbeddingService(config.embedding)
 
-        try:
-            from RAG_API.app.core.config import CHROMA_DB_PATH
-            db_path = str(CHROMA_DB_PATH)
-        except ImportError:
-            # Fallback на относительный путь
-            from pathlib import Path
-            db_path = str(Path(__file__).parent.parent / "chroma_db")
+        # Используем переменную окружения или путь по умолчанию
+        db_path = os.getenv('CHROMA_DB_PATH', '/app/data/chroma_db')
         
         self.vector_store = VectorStore(db_path=db_path, config=config.retrieval)
         self.reranker = Reranker(self.embedding_service) if config.retrieval.use_reranking else None

@@ -12,20 +12,20 @@ export interface Message {
 export interface SendMessageRequest {
   telegram_id: number;
   text: string;
-  file?: File;
+  files?: File[];
 }
 
 export interface BroadcastRequest {
   telegram_ids: number[];
   text: string;
-  file?: File;
+  files?: File[];
 }
 
 export interface ScheduleBroadcastRequest {
   telegram_ids: number[];
   text: string;
   scheduled_at: string;
-  file?: File;
+  files?: File[];
 }
 
 export const messagesApi = {
@@ -38,8 +38,10 @@ export const messagesApi = {
     const formData = new FormData();
     formData.append('telegram_id', request.telegram_id.toString());
     formData.append('text', request.text);
-    if (request.file) {
-      formData.append('file', request.file);
+    if (request.files && request.files.length > 0) {
+      request.files.forEach((file) => {
+        formData.append('files', file);
+      });
     }
     await backendApiFormData.post('/admin/send-message', formData, {
       headers: {
@@ -52,8 +54,10 @@ export const messagesApi = {
     const formData = new FormData();
     formData.append('telegram_ids', JSON.stringify(request.telegram_ids));
     formData.append('text', request.text);
-    if (request.file) {
-      formData.append('file', request.file);
+    if (request.files && request.files.length > 0) {
+      request.files.forEach((file) => {
+        formData.append('files', file);
+      });
     }
     await backendApiFormData.post('/admin/broadcast', formData, {
       headers: {
@@ -67,8 +71,10 @@ export const messagesApi = {
     formData.append('telegram_ids', JSON.stringify(request.telegram_ids));
     formData.append('text', request.text);
     formData.append('scheduled_at', request.scheduled_at);
-    if (request.file) {
-      formData.append('file', request.file);
+    if (request.files && request.files.length > 0) {
+      request.files.forEach((file) => {
+        formData.append('files', file);
+      });
     }
     await backendApiFormData.post('/admin/schedule-broadcast', formData, {
       headers: {

@@ -1,28 +1,73 @@
-from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Form, Request
+from starlette.requests import Request as StarletteRequest
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
 import httpx
 import os
 import json
 from typing import List, Optional
 from datetime import datetime
+from passlib.context import CryptContext
 
 from backend.database import get_db, init_db
-from backend.models import User, Message, ScheduledBroadcast
+from backend.models import User, Message, ScheduledBroadcast, AdminUser
 from backend.schemas import (
     UserCreate, UserUpdate, UserResponse,
     MessageCreate, MessageResponse,
     QueryRequest, QueryResponse,
     OnboardingStatusResponse, OnboardingAnswerRequest, OnboardingAnswerResponse,
     OnboardingAnswerAllRequest, OnboardingAnswerAllResponse,
-    OnboardingDataResponse
+    OnboardingDataResponse,
+    LoginRequest, LoginResponse, CurrentUserResponse,
+    AdminUserCreate, AdminUserUpdate, AdminUserResponse
 )
 
+# Настройка хеширования паролей
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 app = FastAPI(title="Backend API", description="API для управления пользователями и сообщениями")
+
+# Добавляем SessionMiddleware
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 
 RAG_API_URL = os.getenv("RAG_API_URL", "http://rag-api:8000")
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm-service:8002")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}" if TELEGRAM_BOT_TOKEN else None
+
+
+# Вспомогательные функции для аутентификации
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Проверка пароля"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    """Хеширование пароля"""
+    return pwd_context.hash(password)
+
+
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> AdminUser:
+    """Получить текущего пользователя из сессии"""
+    username = request.session.get("username")
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    user = db.query(AdminUser).filter(AdminUser.username == username).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    return user
+
+
+def require_role(allowed_roles: List[str]):
+    """Зависимость для проверки роли"""
+    def check_role(current_user: AdminUser = Depends(get_current_user)):
+        if current_user.role not in allowed_roles:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return current_user
+    return check_role
 
 
 @app.post("/users", response_model=UserResponse)
@@ -432,35 +477,164 @@ def complete_onboarding(telegram_id: int, db: Session = Depends(get_db)):
     return {"message": "Onboarding completed", "user_id": user.id}
 
 
-async def send_telegram_message(telegram_id: int, text: str, file_path: Optional[str] = None, file_content: Optional[bytes] = None, file_name: Optional[str] = None):
-    """Отправить сообщение через Telegram Bot API"""
+def is_image_file(file_name: str) -> bool:
+    """Проверка, является ли файл изображением"""
+    if not file_name:
+        return False
+    image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
+    return any(file_name.lower().endswith(ext) for ext in image_extensions)
+
+
+async def send_telegram_message(
+    telegram_id: int, 
+    text: str, 
+    file_path: Optional[str] = None, 
+    file_content: Optional[bytes] = None, 
+    file_name: Optional[str] = None,
+    files: Optional[List[tuple]] = None  # Список кортежей (file_name, file_content)
+):
+    """Отправить сообщение через Telegram Bot API с поддержкой фото и множественных файлов"""
     if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(status_code=500, detail="TELEGRAM_BOT_TOKEN not configured")
     
     async with httpx.AsyncClient() as client:
         try:
-            if file_path or file_content:
-                # Отправка файла
+            # Если есть множественные файлы - отправляем только первое фото
+            if files:
+                print(f"DEBUG send_telegram_message: получено файлов: {len(files)}")
+                # Находим первое валидное фото
+                first_photo = None
+                for idx, (fname, fcontent) in enumerate(files):
+                    print(f"DEBUG send_telegram_message: файл {idx}: name={fname}, content_size={len(fcontent) if fcontent else 0}, is_image={is_image_file(fname) if fname else False}")
+                    if fname and fcontent and is_image_file(fname):
+                        first_photo = (fname, fcontent)
+                        print(f"DEBUG send_telegram_message: найдено первое фото: {fname}")
+                        break
+                
+                if first_photo:
+                    fname, fcontent = first_photo
+                    print(f"Отправка фото: {fname}, размер: {len(fcontent)} байт")
+                    
+                    # Формируем данные для отправки фото
+                    # Используем правильный формат для httpx: (filename, content)
+                    files_data = {"photo": (fname, fcontent)}
+                    data = {"chat_id": telegram_id}  # chat_id может быть числом
+                    
+                    # Добавляем caption если есть текст
+                    if text and text.strip():
+                        data["caption"] = text
+                        print(f"Текст добавлен как caption: {text[:50]}...")
+                    
+                    try:
+                        response = await client.post(
+                            f"{TELEGRAM_API_URL}/sendPhoto",
+                            data=data,
+                            files=files_data,
+                            timeout=30.0
+                        )
+                        response.raise_for_status()
+                        result = response.json()
+                        
+                        if not result.get("ok"):
+                            error_msg = result.get("description", "Unknown error")
+                            print(f"Telegram API вернул ошибку: {error_msg}")
+                            raise HTTPException(status_code=500, detail=f"Telegram API error: {error_msg}")
+                        
+                        print(f"Фото {fname} успешно отправлено")
+                        return result
+                    except httpx.HTTPStatusError as e:
+                        error_text = e.response.text if e.response else str(e)
+                        print(f"Ошибка HTTP при отправке фото: {error_text}")
+                        raise HTTPException(status_code=500, detail=f"Ошибка отправки фото: {error_text}")
+                    except Exception as e:
+                        print(f"Ошибка при отправке фото: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        raise HTTPException(status_code=500, detail=f"Ошибка отправки фото: {str(e)}")
+                else:
+                    # Если нет фото, но есть файлы - отправляем текст отдельно
+                    print("Фото не найдено в файлах, отправляем только текст")
+                    if text and text.strip():
+                        response = await client.post(
+                            f"{TELEGRAM_API_URL}/sendMessage",
+                            json={"chat_id": telegram_id, "text": text},
+                            timeout=30.0
+                        )
+                        response.raise_for_status()
+                        return response.json()
+                    else:
+                        raise HTTPException(status_code=400, detail="Нет фото для отправки и нет текста")
+            
+            # Один файл (старая логика для обратной совместимости)
+            elif file_path or file_content:
+                is_image = is_image_file(file_name or file_path or "")
+                
                 if file_content:
-                    files = {"document": (file_name or "file", file_content)}
-                    data = {"chat_id": telegram_id, "caption": text}
-                    response = await client.post(
-                        f"{TELEGRAM_API_URL}/sendDocument",
-                        data=data,
-                        files=files,
-                        timeout=30.0
-                    )
+                    file_data = file_content
+                    file_name_to_send = file_name or "photo" if is_image else "file"
                 else:
                     # Если файл по пути
                     with open(file_path, "rb") as f:
-                        files = {"document": (os.path.basename(file_path), f.read())}
-                        data = {"chat_id": telegram_id, "caption": text}
+                        file_data = f.read()
+                    file_name_to_send = os.path.basename(file_path)
+                
+                print(f"Отправка файла: {file_name_to_send}, is_image={is_image}, размер: {len(file_data)} байт")
+                
+                if is_image:
+                    # Отправка как фото
+                    files_data = {"photo": (file_name_to_send, file_data)}
+                    data = {"chat_id": telegram_id}
+                    if text and text.strip():
+                        data["caption"] = text
+                        print(f"Текст добавлен как caption: {text[:50]}...")
+                    
+                    try:
                         response = await client.post(
-                            f"{TELEGRAM_API_URL}/sendDocument",
+                            f"{TELEGRAM_API_URL}/sendPhoto",
                             data=data,
-                            files=files,
+                            files=files_data,
                             timeout=30.0
                         )
+                        response.raise_for_status()
+                        result = response.json()
+                        
+                        if not result.get("ok"):
+                            error_msg = result.get("description", "Unknown error")
+                            print(f"Telegram API вернул ошибку: {error_msg}")
+                            raise HTTPException(status_code=500, detail=f"Telegram API error: {error_msg}")
+                        
+                        print(f"Фото {file_name_to_send} успешно отправлено")
+                        return result
+                    except httpx.HTTPStatusError as e:
+                        error_text = e.response.text if e.response else str(e)
+                        print(f"Ошибка HTTP при отправке фото: {error_text}")
+                        raise HTTPException(status_code=500, detail=f"Ошибка отправки фото: {error_text}")
+                    except Exception as e:
+                        print(f"Ошибка при отправке фото: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        raise HTTPException(status_code=500, detail=f"Ошибка отправки фото: {str(e)}")
+                else:
+                    # Отправка как документ
+                    files_data = {"document": (file_name_to_send, file_data)}
+                    data = {"chat_id": telegram_id}
+                    if text and text.strip():
+                        data["caption"] = text
+                    
+                    response = await client.post(
+                        f"{TELEGRAM_API_URL}/sendDocument",
+                        data=data,
+                        files=files_data,
+                        timeout=30.0
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    
+                    if not result.get("ok"):
+                        error_msg = result.get("description", "Unknown error")
+                        raise HTTPException(status_code=500, detail=f"Telegram API error: {error_msg}")
+                    
+                    return result
             else:
                 # Отправка текста
                 response = await client.post(
@@ -480,23 +654,53 @@ async def send_telegram_message(telegram_id: int, text: str, file_path: Optional
 @app.post("/admin/send-message")
 async def send_message_to_user(
     telegram_id: int = Form(...),
-    text: str = Form(...),
-    file: Optional[UploadFile] = File(None),
+    text: str = Form(""),
+    files: List[UploadFile] = File(default=[]),
+    current_user: AdminUser = Depends(require_role(["dev", "admin", "manager"])),
     db: Session = Depends(get_db)
 ):
-    """Отправить сообщение пользователю через Telegram"""
+    """Отправить сообщение пользователю через Telegram с поддержкой множественных файлов"""
     user = db.query(User).filter(User.telegram_id == telegram_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    file_content = None
-    file_name = None
-    if file:
-        file_content = await file.read()
-        file_name = file.filename
+    # Получаем файлы из параметров функции
+    files_list = []
+    
+    print(f"DEBUG send-message: files parameter type: {type(files)}, length: {len(files) if files else 0}")
+    
+    if files:
+        for idx, file_item in enumerate(files):
+            try:
+                # Получаем имя файла
+                filename = getattr(file_item, 'filename', None)
+                if not filename:
+                    print(f"DEBUG send-message: файл {idx} без имени, пропускаем")
+                    continue
+                
+                print(f"DEBUG send-message: обработка файла {idx}: {filename}, type={type(file_item)}")
+                
+                # Читаем содержимое файла
+                file_content = await file_item.read()
+                if not file_content:
+                    print(f"DEBUG send-message: файл {filename} пустой, пропускаем")
+                    continue
+                
+                files_list.append((filename, file_content))
+                print(f"DEBUG send-message: файл {filename} подготовлен, размер: {len(file_content)} байт")
+            except Exception as e:
+                print(f"DEBUG send-message: ошибка при обработке файла {idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+    
+    print(f"DEBUG send-message: Итого подготовлено файлов: {len(files_list)}")
     
     # Отправляем через Telegram
-    telegram_result = await send_telegram_message(telegram_id, text, file_content=file_content, file_name=file_name)
+    if files_list:
+        telegram_result = await send_telegram_message(telegram_id, text, files=files_list)
+    else:
+        telegram_result = await send_telegram_message(telegram_id, text)
     
     # Сохраняем сообщение в БД
     bot_message = Message(
@@ -513,22 +717,49 @@ async def send_message_to_user(
 
 @app.post("/admin/broadcast")
 async def broadcast_message(
-    telegram_ids: str = Form(...),  # JSON string
-    text: str = Form(...),
-    file: Optional[UploadFile] = File(None),
+    telegram_ids: str = Form(...),
+    text: str = Form(""),
+    files: List[UploadFile] = File(default=[]),
+    current_user: AdminUser = Depends(require_role(["dev", "admin", "manager"])),
     db: Session = Depends(get_db)
 ):
-    """Массовая рассылка сообщений"""
+    """Массовая рассылка сообщений с поддержкой множественных файлов"""
     try:
         ids = json.loads(telegram_ids)
     except:
         raise HTTPException(status_code=400, detail="Invalid telegram_ids format")
     
-    file_content = None
-    file_name = None
-    if file:
-        file_content = await file.read()
-        file_name = file.filename
+    # Получаем файлы из параметров функции
+    files_list = []
+    
+    print(f"DEBUG broadcast: files parameter type: {type(files)}, length: {len(files) if files else 0}")
+    
+    if files:
+        for idx, file_item in enumerate(files):
+            try:
+                # Получаем имя файла
+                filename = getattr(file_item, 'filename', None)
+                if not filename:
+                    print(f"DEBUG broadcast: файл {idx} без имени, пропускаем")
+                    continue
+                
+                print(f"DEBUG broadcast: обработка файла {idx}: {filename}, type={type(file_item)}")
+                
+                # Читаем содержимое файла
+                file_content = await file_item.read()
+                if not file_content:
+                    print(f"DEBUG broadcast: файл {filename} пустой, пропускаем")
+                    continue
+                
+                files_list.append((filename, file_content))
+                print(f"DEBUG broadcast: файл {filename} подготовлен, размер: {len(file_content)} байт")
+            except Exception as e:
+                print(f"DEBUG broadcast: ошибка при обработке файла {idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+    
+    print(f"DEBUG broadcast: Итого подготовлено файлов: {len(files_list)}")
     
     results = []
     errors = []
@@ -541,7 +772,11 @@ async def broadcast_message(
                 continue
             
             # Отправляем через Telegram
-            telegram_result = await send_telegram_message(telegram_id, text, file_content=file_content, file_name=file_name)
+            print(f"DEBUG broadcast: Отправка сообщения пользователю {telegram_id}, файлов: {len(files_list)}")
+            if files_list:
+                telegram_result = await send_telegram_message(telegram_id, text, files=files_list)
+            else:
+                telegram_result = await send_telegram_message(telegram_id, text)
             
             # Сохраняем сообщение в БД
             bot_message = Message(
@@ -567,24 +802,34 @@ async def broadcast_message(
 
 @app.post("/admin/schedule-broadcast")
 async def schedule_broadcast(
-    telegram_ids: str = Form(...),
-    text: str = Form(...),
-    scheduled_at: str = Form(...),
-    file: Optional[UploadFile] = File(None),
+    request: StarletteRequest,
+    current_user: AdminUser = Depends(require_role(["dev", "admin", "manager"])),
     db: Session = Depends(get_db)
 ):
-    """Запланированная рассылка"""
+    """Запланированная рассылка с поддержкой множественных файлов"""
+    # Получаем все данные из формы
+    form = await request.form()
+    
+    telegram_ids = form.get("telegram_ids", "[]")
+    text = form.get("text", "")
+    scheduled_at = form.get("scheduled_at", "")
+    
     try:
         ids = json.loads(telegram_ids)
         scheduled_datetime = datetime.fromisoformat(scheduled_at.replace('Z', '+00:00'))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid format: {str(e)}")
     
+    # Для запланированных рассылок сохраняем только первый файл (для упрощения)
+    # В будущем можно расширить модель для хранения множественных файлов
     file_content = None
     file_name = None
-    if file:
-        file_content = await file.read()
-        file_name = file.filename
+    files_from_form = form.getlist("files")
+    if files_from_form and len(files_from_form) > 0:
+        first_file = files_from_form[0]
+        if isinstance(first_file, UploadFile) and first_file.filename:
+            file_content = await first_file.read()
+            file_name = first_file.filename
     
     # Сохраняем в таблицу scheduled_broadcasts
     import base64
@@ -696,6 +941,152 @@ def delete_user(telegram_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": "User deleted", "telegram_id": telegram_id}
+
+
+# Эндпоинты аутентификации
+@app.post("/auth/login", response_model=LoginResponse)
+def login(request: Request, login_data: LoginRequest, db: Session = Depends(get_db)):
+    """Вход в систему"""
+    user = db.query(AdminUser).filter(AdminUser.username == login_data.username).first()
+    if not user or not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Сохраняем в сессии
+    request.session["username"] = user.username
+    request.session["role"] = user.role
+    
+    return LoginResponse(
+        username=user.username,
+        role=user.role,
+        message="Login successful"
+    )
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    """Выход из системы"""
+    request.session.clear()
+    return {"message": "Logout successful"}
+
+
+@app.get("/auth/me", response_model=CurrentUserResponse)
+def get_current_user_info(current_user: AdminUser = Depends(get_current_user)):
+    """Получить информацию о текущем пользователе"""
+    return CurrentUserResponse(
+        username=current_user.username,
+        role=current_user.role
+    )
+
+
+# CRUD эндпоинты для управления админ-пользователями (только dev и admin)
+@app.get("/admin/users", response_model=List[AdminUserResponse])
+def get_admin_users(
+    current_user: AdminUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получить список всех админ-пользователей"""
+    if current_user.role not in ["dev", "admin"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    users = db.query(AdminUser).all()
+    return users
+
+
+@app.post("/admin/users", response_model=AdminUserResponse)
+def create_admin_user(
+    user_data: AdminUserCreate,
+    current_user: AdminUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создать нового админ-пользователя"""
+    if current_user.role not in ["dev", "admin"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    # Проверяем, что роль валидна
+    if user_data.role not in ["dev", "admin", "manager"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
+    # Проверяем, что пользователь с таким username не существует
+    existing_user = db.query(AdminUser).filter(AdminUser.username == user_data.username).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    
+    # Создаем нового пользователя
+    password_hash = get_password_hash(user_data.password)
+    new_user = AdminUser(
+        username=user_data.username,
+        password_hash=password_hash,
+        role=user_data.role
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    
+    return new_user
+
+
+@app.put("/admin/users/{user_id}", response_model=AdminUserResponse)
+def update_admin_user(
+    user_id: int,
+    user_data: AdminUserUpdate,
+    current_user: AdminUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Обновить админ-пользователя"""
+    if current_user.role not in ["dev", "admin"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Обновляем поля
+    if user_data.username is not None:
+        # Проверяем, что новый username не занят
+        existing_user = db.query(AdminUser).filter(
+            AdminUser.username == user_data.username,
+            AdminUser.id != user_id
+        ).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already exists")
+        user.username = user_data.username
+    
+    if user_data.password is not None:
+        user.password_hash = get_password_hash(user_data.password)
+    
+    if user_data.role is not None:
+        if user_data.role not in ["dev", "admin", "manager"]:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        user.role = user_data.role
+    
+    db.commit()
+    db.refresh(user)
+    
+    return user
+
+
+@app.delete("/admin/users/{user_id}")
+def delete_admin_user(
+    user_id: int,
+    current_user: AdminUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Удалить админ-пользователя"""
+    if current_user.role not in ["dev", "admin"]:
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    
+    # Нельзя удалить самого себя
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    
+    user = db.query(AdminUser).filter(AdminUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    db.delete(user)
+    db.commit()
+    
+    return {"message": "User deleted successfully"}
 
 
 @app.get("/")

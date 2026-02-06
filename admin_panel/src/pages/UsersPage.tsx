@@ -40,70 +40,119 @@ export default function UsersPage() {
       <h1 className="text-3xl font-bold text-primary-blue mb-6">Пользователи</h1>
       
       <div className="card mb-4">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Telegram ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Телефон</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Onboarding</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Действия</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {users?.map((user) => (
-              <tr key={user.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{user.id}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <a 
-                    href={`https://t.me/${user.username || user.telegram_id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary-blue hover:underline"
-                  >
-                    {user.telegram_id}
-                  </a>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {user.username ? `@${user.username}` : '-'}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                  {user.phone ? (
-                    <a href={`tel:${user.phone}`} className="text-primary-blue hover:underline">
-                      {user.phone}
-                    </a>
-                  ) : '-'}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  {user.onboarding_completed === 1 ? (
-                    <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                      Завершен
-                    </span>
-                  ) : (
-                    <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
-                      В процессе
-                    </span>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                  <button
-                    onClick={() => toggleUser(user.telegram_id)}
-                    className="text-primary-blue hover:text-primary-darkBlue mr-2"
-                  >
-                    {expandedUsers.has(user.telegram_id) ? 'Скрыть' : 'Детали'}
-                  </button>
-                  <button
-                    onClick={() => handleChatClick(user.telegram_id)}
-                    className="btn-primary"
-                  >
-                    Чат
-                  </button>
-                </td>
+        {/* Desktop table */}
+        <div className="hidden md:block overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Telegram ID</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Телефон</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Onboarding</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Действия</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {users?.map((user) => (
+                <tr key={user.id} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{user.id}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <a 
+                      href={`https://t.me/${user.username || user.telegram_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary-blue hover:underline"
+                    >
+                      {user.telegram_id}
+                    </a>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    {user.username ? `@${user.username}` : '-'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    {user.phone ? (
+                      <a href={`tel:${user.phone}`} className="text-primary-blue hover:underline">
+                        {user.phone}
+                      </a>
+                    ) : '-'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    {user.onboarding_completed === 1 ? (
+                      <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+                        Завершен
+                      </span>
+                    ) : (
+                      <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                        В процессе
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <button
+                      onClick={() => toggleUser(user.telegram_id)}
+                      className="text-primary-blue hover:text-primary-darkBlue mr-2"
+                    >
+                      {expandedUsers.has(user.telegram_id) ? 'Скрыть' : 'Детали'}
+                    </button>
+                    <button
+                      onClick={() => handleChatClick(user.telegram_id)}
+                      className="btn-primary"
+                    >
+                      Чат
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Mobile cards */}
+        <div className="md:hidden space-y-4">
+          {users?.map((user) => (
+            <div key={user.id} className="border rounded-lg p-4 space-y-2">
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="font-semibold">
+                    {user.username ? `@${user.username}` : `#${user.telegram_id}`}
+                  </p>
+                  <p className="text-sm text-gray-600">ID: {user.id}</p>
+                </div>
+                {user.onboarding_completed === 1 ? (
+                  <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
+                    Завершен
+                  </span>
+                ) : (
+                  <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                    В процессе
+                  </span>
+                )}
+              </div>
+              {user.phone && (
+                <p className="text-sm">
+                  <a href={`tel:${user.phone}`} className="text-primary-blue hover:underline">
+                    {user.phone}
+                  </a>
+                </p>
+              )}
+              <div className="flex space-x-2">
+                <button
+                  onClick={() => toggleUser(user.telegram_id)}
+                  className="flex-1 btn-secondary text-sm"
+                >
+                  {expandedUsers.has(user.telegram_id) ? 'Скрыть' : 'Детали'}
+                </button>
+                <button
+                  onClick={() => handleChatClick(user.telegram_id)}
+                  className="flex-1 btn-primary text-sm"
+                >
+                  Чат
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
       
       {users?.map((user) => {

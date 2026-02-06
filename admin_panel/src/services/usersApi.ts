@@ -24,6 +24,46 @@ export interface OnboardingData {
   clarification_question: string | null;
 }
 
+export interface AdminUser {
+  id: number;
+  username: string;
+  role: string;
+  created_at: string;
+}
+
+export interface AdminUserCreate {
+  username: string;
+  password: string;
+  role: string;
+}
+
+export interface AdminUserUpdate {
+  username?: string;
+  password?: string;
+  role?: string;
+}
+
+export const adminUsersApi = {
+  getAll: async (): Promise<AdminUser[]> => {
+    const response = await backendApi.get<AdminUser[]>('/admin/users');
+    return response.data;
+  },
+
+  create: async (user: AdminUserCreate): Promise<AdminUser> => {
+    const response = await backendApi.post<AdminUser>('/admin/users', user);
+    return response.data;
+  },
+
+  update: async (id: number, user: AdminUserUpdate): Promise<AdminUser> => {
+    const response = await backendApi.put<AdminUser>(`/admin/users/${id}`, user);
+    return response.data;
+  },
+
+  delete: async (id: number): Promise<void> => {
+    await backendApi.delete(`/admin/users/${id}`);
+  },
+};
+
 export const usersApi = {
   getAll: async (): Promise<User[]> => {
     const response = await backendApi.get<User[]>('/users');
