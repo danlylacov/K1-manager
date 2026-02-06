@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
+from typing import List, Dict, Optional
 
 
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'
@@ -25,8 +26,29 @@ from RAG.llm_provider.llm_provider import LLMProvider
 app = FastAPI(title="RAG API", description="API для работы с RAG системой")
 
 
+def format_conversation_history(history: Optional[List[Dict[str, str]]]) -> str:
+    """Форматировать историю диалога в читаемый текст"""
+    if not history:
+        return "История диалога отсутствует"
+    
+    formatted_lines = []
+    for msg in history:
+        role = msg.get("role", "")
+        text = msg.get("text", "")
+        
+        if role == "user":
+            formatted_lines.append(f"Пользователь: {text}")
+        elif role == "assistant":
+            formatted_lines.append(f"Ассистент: {text}")
+        else:
+            formatted_lines.append(f"{role}: {text}")
+    
+    return "\n".join(formatted_lines) if formatted_lines else "История диалога отсутствует"
+
+
 class QueryRequest(BaseModel):
     question: str
+    conversation_history: Optional[List[Dict[str, str]]] = None
 
 
 class QueryResponse(BaseModel):
@@ -60,7 +82,15 @@ async def query(request: QueryRequest):
 
         with open(user_prompt_path, 'r', encoding='utf-8') as file:
             user_prompt = file.read()
-            user_prompt = user_prompt.format(answer=result['answer'], question=request.question)
+            
+            # Форматируем историю диалога
+            conversation_history_text = format_conversation_history(request.conversation_history)
+            
+            user_prompt = user_prompt.format(
+                conversation_history=conversation_history_text,
+                answer=result['answer'],
+                question=request.question
+            )
             print(user_prompt)
 
         llm = LLMProvider(system_prompt)
