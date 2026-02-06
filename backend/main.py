@@ -19,7 +19,8 @@ from backend.schemas import (
     OnboardingAnswerAllRequest, OnboardingAnswerAllResponse,
     OnboardingDataResponse,
     LoginRequest, LoginResponse, CurrentUserResponse,
-    AdminUserCreate, AdminUserUpdate, AdminUserResponse
+    AdminUserCreate, AdminUserUpdate, AdminUserResponse,
+    AdminNotificationRequest
 )
 
 # Настройка хеширования паролей
@@ -35,6 +36,11 @@ RAG_API_URL = os.getenv("RAG_API_URL", "http://rag-api:8000")
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm-service:8002")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}" if TELEGRAM_BOT_TOKEN else None
+ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID")
+SITE_URL = os.getenv("SITE_URL", "http://localhost:3000")
+# Альтернативно можно указать ID администраторов для личных сообщений (через запятую)
+ADMIN_TELEGRAM_IDS = os.getenv("ADMIN_TELEGRAM_IDS", "").split(",") if os.getenv("ADMIN_TELEGRAM_IDS") else []
+ADMIN_TELEGRAM_IDS = [int(uid.strip()) for uid in ADMIN_TELEGRAM_IDS if uid.strip().isdigit()]
 
 
 # Вспомогательные функции для аутентификации
@@ -74,6 +80,8 @@ def require_role(allowed_roles: List[str]):
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
     """Создать пользователя"""
     db_user = db.query(User).filter(User.telegram_id == user.telegram_id).first()
+    is_new_user = db_user is None
+    
     if db_user:
         return db_user
     
@@ -81,6 +89,30 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    
+    # Отправляем уведомление о новом пользователе в фоне
+    if is_new_user:
+        import asyncio
+        import threading
+        
+        def send_notification_async():
+            """Отправка уведомления в отдельном потоке"""
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(send_admin_notification(
+                    "new_user",
+                    db_user.telegram_id,
+                    db_user.username
+                ))
+                loop.close()
+            except Exception as e:
+                print(f"Ошибка отправки уведомления о новом пользователе: {e}")
+        
+        # Запускаем в отдельном потоке, чтобы не блокировать ответ
+        thread = threading.Thread(target=send_notification_async, daemon=True)
+        thread.start()
+    
     return db_user
 
 
@@ -673,6 +705,130 @@ async def send_telegram_message(
             raise HTTPException(status_code=500, detail=f"Error sending message: {str(e)}")
 
 
+async def send_admin_notification(
+    notification_type: str,
+    telegram_id: int,
+    username: Optional[str] = None,
+    phone: Optional[str] = None
+):
+    """Отправить уведомление администраторам в группу"""
+    if not ADMIN_GROUP_CHAT_ID or not TELEGRAM_BOT_TOKEN:
+        print("ADMIN_GROUP_CHAT_ID или TELEGRAM_BOT_TOKEN не настроены, уведомление не отправлено")
+        return
+    
+    print(f"Отправка уведомления: type={notification_type}, chat_id={ADMIN_GROUP_CHAT_ID}")
+
+    # Формируем ссылку на переписку в админ-панели
+    chat_link = f"{SITE_URL}/chat/{telegram_id}" if SITE_URL else f"tg://user?id={telegram_id}"
+    
+    # Формируем никнейм для отображения
+    user_display = f"@{username}" if username else f"#{telegram_id}"
+    
+    # Формируем сообщение в зависимости от типа уведомления (используем HTML для лучшей совместимости)
+    if notification_type == "new_user":
+        message = (
+            "✅✅✅\n\n<b>Новый пользователь бота</b>\n\n\n"
+            f"👤 Никнейм: {user_display}\n"
+            f"🆔 ID: <code>{telegram_id}</code>\n"
+            f"🔗 <a href=\"{chat_link}\">Открыть чат</a>"
+        )
+    elif notification_type == "phone_submitted":
+        phone_display = phone if phone else "не указан"
+        message = (
+            "📞📞📞\n\n<b>Пользователь записался на занятие</b>\n\n\n"
+            f"👤 Никнейм: {user_display}\n"
+            f"🆔 ID: <code>{telegram_id}</code>\n"
+            f"📱 Телефон: <code>{phone_display}</code>\n"
+            f"🔗 <a href=\"{chat_link}\">Открыть чат</a>"
+        )
+    elif notification_type == "call_admin":
+        message = (
+            "🆘🆘🆘\n\n<b>Пользователь просит помощи</b>\n\n\n"
+            f"👤 Никнейм: {user_display}\n"
+            f"🆔 ID: <code>{telegram_id}</code>\n"
+            f"🔗 <a href=\"{chat_link}\">Открыть чат</a>"
+        )
+    else:
+        print(f"Неизвестный тип уведомления: {notification_type}")
+        return
+    
+    # Отправляем сообщение в группу администраторов
+    # Преобразуем chat_id в int для групп с отрицательным ID
+    try:
+        chat_id = int(ADMIN_GROUP_CHAT_ID) if ADMIN_GROUP_CHAT_ID else None
+    except (ValueError, TypeError):
+        chat_id = ADMIN_GROUP_CHAT_ID
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{TELEGRAM_API_URL}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": message,
+                    "parse_mode": "HTML"
+                },
+                timeout=10.0
+            )
+            response.raise_for_status()
+            result = response.json()
+            
+            if not result.get("ok"):
+                error_msg = result.get("description", "Unknown error")
+                error_code = result.get("error_code", "unknown")
+                print(f"Ошибка отправки уведомления в группу (код {error_code}): {error_msg}")
+                print(f"Проверьте, что бот добавлен в группу с ID {chat_id} и имеет права на отправку сообщений")
+                
+                # Если не удалось отправить в группу, пробуем отправить администраторам в личку
+                if ADMIN_TELEGRAM_IDS:
+                    print(f"Пробуем отправить уведомление администраторам в личные сообщения...")
+                    await send_to_admins_pm(message, notification_type, telegram_id, username, phone)
+            else:
+                print(f"Уведомление успешно отправлено в группу {chat_id}")
+        except httpx.HTTPStatusError as e:
+            error_text = e.response.text if e.response else str(e)
+            print(f"Ошибка HTTP при отправке уведомления в группу: {error_text}")
+            
+            # Если не удалось отправить в группу, пробуем отправить администраторам в личку
+            if ADMIN_TELEGRAM_IDS:
+                print(f"Пробуем отправить уведомление администраторам в личные сообщения...")
+                await send_to_admins_pm(message, notification_type, telegram_id, username, phone)
+        except Exception as e:
+            print(f"Ошибка при отправке уведомления: {e}")
+            # Если не удалось отправить в группу, пробуем отправить администраторам в личку
+            if ADMIN_TELEGRAM_IDS:
+                try:
+                    await send_to_admins_pm(message, notification_type, telegram_id, username, phone)
+                except:
+                    pass
+
+
+async def send_to_admins_pm(message: str, notification_type: str, telegram_id: int, username: Optional[str] = None, phone: Optional[str] = None):
+    """Отправить уведомление администраторам в личные сообщения"""
+    if not ADMIN_TELEGRAM_IDS:
+        return
+    
+    async with httpx.AsyncClient() as client:
+        for admin_id in ADMIN_TELEGRAM_IDS:
+            try:
+                response = await client.post(
+                    f"{TELEGRAM_API_URL}/sendMessage",
+                    json={
+                        "chat_id": admin_id,
+                        "text": message,
+                        "parse_mode": "HTML"
+                    },
+                    timeout=10.0
+                )
+                result = response.json()
+                if result.get("ok"):
+                    print(f"Уведомление отправлено администратору {admin_id}")
+                else:
+                    print(f"Не удалось отправить администратору {admin_id}: {result.get('description')}")
+            except Exception as e:
+                print(f"Ошибка отправки администратору {admin_id}: {e}")
+
+
 @app.post("/admin/send-message")
 async def send_message_to_user(
     telegram_id: int = Form(...),
@@ -1109,6 +1265,18 @@ def delete_admin_user(
     db.commit()
     
     return {"message": "User deleted successfully"}
+
+
+@app.post("/admin/notify")
+async def notify_admin_endpoint(request: AdminNotificationRequest):
+    """API endpoint для отправки уведомлений администраторам"""
+    await send_admin_notification(
+        request.notification_type,
+        request.telegram_id,
+        request.username,
+        request.phone
+    )
+    return {"message": "Notification sent"}
 
 
 @app.get("/")

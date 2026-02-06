@@ -24,14 +24,26 @@ class UserStates(StatesGroup):
     onboarding_clarification = State()  # Уточнение от LLM
 
 
-def get_main_keyboard():
+def get_main_keyboard(allow_contact_request: bool = True):
     """Клавиатура с основными кнопками"""
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Записаться на занятие", request_contact=True)]
-        ],
-        resize_keyboard=True
-    )
+    # request_contact работает только в личных чатах
+    # Если allow_contact_request=False, используем обычную кнопку
+    if allow_contact_request:
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Записаться на занятие", request_contact=True)],
+                [KeyboardButton(text="Позвать администратора")]
+            ],
+            resize_keyboard=True
+        )
+    else:
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Записаться на занятие")],
+                [KeyboardButton(text="Позвать администратора")]
+            ],
+            resize_keyboard=True
+        )
     return keyboard
 
 
@@ -95,6 +107,27 @@ async def get_onboarding_status(telegram_id: int):
             return None
 
 
+async def notify_admin(notification_type: str, telegram_id: int, username: str = None, phone: str = None):
+    """Отправить уведомление администраторам"""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{BACKEND_API_URL}/admin/notify",
+                json={
+                    "notification_type": notification_type,
+                    "telegram_id": telegram_id,
+                    "username": username,
+                    "phone": phone
+                },
+                timeout=10.0
+            )
+            # Не поднимаем исключение, если уведомление не отправилось - это не критично
+            if response.status_code != 200:
+                print(f"Не удалось отправить уведомление администраторам: {response.status_code}")
+        except Exception as e:
+            print(f"Ошибка отправки уведомления администраторам: {e}")
+
+
 ONBOARDING_QUESTIONS_TEXT = """Расскажите, пожалуйста, о вашем ребенке:
 1. Насколько уверенно ребенок дружит с мышкой и клавиатурой?
 2. Был ли уже опыт в программировании или робототехнике? (Если нет — так даже интереснее, мы любим открывать таланты!)
@@ -107,10 +140,14 @@ ONBOARDING_QUESTIONS_TEXT = """Расскажите, пожалуйста, о в
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     """Обработчик команды /start"""
+    # Регистрируем пользователя (уведомление отправится из backend при создании)
     await register_user(message.from_user.id, message.from_user.username)
     
     # Сохраняем команду /start в БД
     await save_message(message.from_user.id, "/start", is_bot=0)
+    
+    # Проверяем тип чата - request_contact работает только в личных чатах
+    is_private = message.chat.type == "private"
     
     # Проверяем статус onboarding
     onboarding_status = await get_onboarding_status(message.from_user.id)
@@ -124,7 +161,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             "Привет! Я бот для работы с базой знаний.\n\n"
             "Вы можете задать любой вопрос о нашей школе!"
         )
-        await message.answer(welcome_text, reply_markup=get_main_keyboard())
+        await message.answer(welcome_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
         # Сохраняем приветственное сообщение бота
         await save_message(message.from_user.id, welcome_text, is_bot=1)
 
@@ -140,6 +177,9 @@ async def start_onboarding(message: types.Message, state: FSMContext):
 async def process_question(message: types.Message):
     """Обработка вопроса пользователя"""
     question = message.text
+    
+    # Проверяем тип чата
+    is_private = message.chat.type == "private"
     
     # Сохраняем вопрос пользователя (он будет сохранен в backend при обработке запроса, но сохраним и здесь для надежности)
     # await save_message(message.from_user.id, question, is_bot=0)
@@ -164,13 +204,16 @@ async def process_question(message: types.Message):
             
             # Удаляем сообщение "печатает..." и отправляем ответ
             await bot_message.delete()
-            await message.answer(answer, reply_markup=get_main_keyboard())
+            await message.answer(answer, reply_markup=get_main_keyboard(allow_contact_request=is_private))
             # Сообщение бота уже сохранено в backend при обработке запроса
         except Exception as e:
             # Удаляем сообщение "печатает..." и отправляем ошибку
-            await bot_message.delete()
+            try:
+                await bot_message.delete()
+            except:
+                pass
             error_text = "Извините, произошла ошибка при обработке вопроса. Попробуйте позже."
-            await message.answer(error_text, reply_markup=get_main_keyboard())
+            await message.answer(error_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
             await save_message(message.from_user.id, error_text, is_bot=1)
             print(f"Ошибка запроса к backend: {e}")
 
@@ -181,11 +224,34 @@ async def register_handler(message: types.Message, state: FSMContext):
     # Сохраняем сообщение пользователя
     await save_message(message.from_user.id, message.text, is_bot=0)
     
+    is_private = message.chat.type == "private"
     await state.set_state(UserStates.waiting_for_phone)
     phone_request_text = "Пожалуйста, поделитесь контактом, нажав кнопку ниже:"
-    await message.answer(phone_request_text, reply_markup=get_main_keyboard())
+    await message.answer(phone_request_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
     # Сохраняем запрос бота
     await save_message(message.from_user.id, phone_request_text, is_bot=1)
+
+
+@dp.message(lambda message: message.text == "Позвать администратора")
+async def call_admin_handler(message: types.Message, state: FSMContext):
+    """Обработчик кнопки 'Позвать администратора'"""
+    is_private = message.chat.type == "private"
+    
+    # Сохраняем сообщение пользователя
+    await save_message(message.from_user.id, message.text, is_bot=0)
+    
+    # Отправляем уведомление администраторам
+    await notify_admin(
+        "call_admin",
+        message.from_user.id,
+        message.from_user.username
+    )
+    
+    # Отвечаем пользователю
+    admin_called_text = "Спасибо! Администратор получил уведомление и свяжется с вами в ближайшее время."
+    await message.answer(admin_called_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
+    # Сохраняем ответ бота
+    await save_message(message.from_user.id, admin_called_text, is_bot=1)
 
 
 @dp.message(lambda message: message.contact is not None)
@@ -193,6 +259,8 @@ async def process_contact(message: types.Message, state: FSMContext):
     """Обработка контакта пользователя"""
     contact = message.contact
     phone = contact.phone_number
+    
+    is_private = message.chat.type == "private"
     
     # Сохраняем сообщение с контактом
     contact_text = f"Контакт: {phone}"
@@ -210,13 +278,21 @@ async def process_contact(message: types.Message, state: FSMContext):
             )
             response.raise_for_status()
             
+            # Отправляем уведомление администраторам о записи на занятие
+            await notify_admin(
+                "phone_submitted",
+                message.from_user.id,
+                message.from_user.username,
+                phone
+            )
+            
             phone_saved_text = f"Спасибо! Ваш телефон {phone} записан. Мы свяжемся с вами в ближайшее время."
-            await message.answer(phone_saved_text, reply_markup=get_main_keyboard())
+            await message.answer(phone_saved_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
             # Сохраняем сообщение бота
             await save_message(message.from_user.id, phone_saved_text, is_bot=1)
         except Exception as e:
             error_text = "Извините, произошла ошибка при сохранении телефона. Попробуйте позже."
-            await message.answer(error_text, reply_markup=get_main_keyboard())
+            await message.answer(error_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
             await save_message(message.from_user.id, error_text, is_bot=1)
             print(f"Ошибка обновления телефона: {e}")
             import traceback
@@ -228,12 +304,14 @@ async def process_contact(message: types.Message, state: FSMContext):
 @dp.message(UserStates.waiting_for_phone)
 async def process_phone_waiting(message: types.Message):
     """Обработка сообщений в состоянии ожидания контакта"""
+    is_private = message.chat.type == "private"
+    
     # Сохраняем сообщение пользователя
     if message.text:
         await save_message(message.from_user.id, message.text, is_bot=0)
     
     phone_wait_text = "Пожалуйста, поделитесь контактом, нажав кнопку 'Записаться на занятие'."
-    await message.answer(phone_wait_text, reply_markup=get_main_keyboard())
+    await message.answer(phone_wait_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
     # Сохраняем ответ бота
     await save_message(message.from_user.id, phone_wait_text, is_bot=1)
 
@@ -284,6 +362,8 @@ async def process_onboarding_answer(message: types.Message, state: FSMContext):
 
 async def complete_onboarding(message: types.Message, state: FSMContext):
     """Завершить onboarding"""
+    is_private = message.chat.type == "private"
+    
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
@@ -296,7 +376,7 @@ async def complete_onboarding(message: types.Message, state: FSMContext):
                 "Спасибо! Мы получили всю необходимую информацию.\n\n"
                 "Теперь вы можете задавать вопросы о нашей школе!"
             )
-            await message.answer(completion_text, reply_markup=get_main_keyboard())
+            await message.answer(completion_text, reply_markup=get_main_keyboard(allow_contact_request=is_private))
             # Сохраняем сообщение о завершении onboarding
             await save_message(message.from_user.id, completion_text, is_bot=1)
         except Exception as e:
