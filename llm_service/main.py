@@ -6,6 +6,7 @@ LLM Service - отдельный сервис для работы с LLM
 import os
 import json
 import re
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from llm_service.llm_provider import LLMProvider
 from llm_service.schemas import (
@@ -16,36 +17,20 @@ from typing import Optional, Dict, Any
 
 app = FastAPI(title="LLM Service", description="Сервис для работы с LLM")
 
-# System prompt для извлечения данных onboarding
-EXTRACT_SYSTEM_PROMPT = """Ты - ассистент детской школы программирования KiberOne. Твоя задача - извлекать структурированную информацию из ответов родителей на вопросы о ребенке.
+# Определяем путь к промптам относительно файла main.py
+PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-ТВОИ ОСНОВНЫЕ ПРИНЦИПЫ:
-1. Точность - извлекай только то, что явно указано в ответе
-2. Естественность - общайся как живой менеджер, а не как робот
-3. Краткость - формулируй уточняющие вопросы коротко (1 предложение)
-4. Дружелюбность - будь вежливым и понимающим
 
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
+def load_prompt(filename: str) -> str:
+    """Загрузить промпт из файла"""
+    prompt_path = PROMPTS_DIR / filename
+    with open(prompt_path, 'r', encoding='utf-8') as file:
+        return file.read()
 
-1. ИЗВЛЕЧЕНИЕ ДАННЫХ:
-- Извлекай информацию ТОЛЬКО из предоставленного ответа
-- Если информация неясна или отсутствует - устанавливай needs_clarification = true
-- НЕ придумывай данные, которых нет в ответе
 
-2. ФОРМАТ УТОЧНЯЮЩИХ ВОПРОСОВ:
-- Задавай вопрос так, как живой менеджер в переписке с клиентом
-- Один вопрос за раз, кратко (1 предложение)
-- Без формальностей, по-дружески
-- Пример: "А сколько примерно лет ребенку?" вместо "Пожалуйста, уточните возраст ребенка"
-- Стиль как в RAG промптах: кратко и по делу, без воды
-
-3. СТРУКТУРИРОВАНИЕ:
-- mouse_keyboard_skill: краткое описание уровня (например: "уверенно", "средне", "начинает", "не умеет")
-- programming_experience: "есть опыт: [краткое описание]" или "нет опыта" или null
-- child_age: только число (возраст)
-- child_name: только имя (без фамилии, если не указана)
-
-4. ВОЗВРАЩАЙ JSON СТРОГО В УКАЗАННОМ ФОРМАТЕ"""
+def get_extract_system_prompt() -> str:
+    """Получить системный промпт для извлечения данных onboarding"""
+    return load_prompt("extract_system_prompt.txt")
 
 
 def parse_json_response(text: str) -> dict:
@@ -80,42 +65,20 @@ async def process(request: ProcessRequest):
 async def extract_onboarding(request: OnboardingExtractRequest):
     """Извлечение структурированных данных из ответа пользователя"""
     try:
+        # Загружаем промпты из файлов
+        system_prompt = get_extract_system_prompt()
+        user_prompt_template = load_prompt("extract_onboarding_user_prompt.txt")
+        
         # Формируем user prompt
         context_str = json.dumps(request.context, ensure_ascii=False) if request.context else "нет"
         
-        user_prompt = f"""ВОПРОС МЕНЕДЖЕРА:
-{request.question}
-
-ОТВЕТ РОДИТЕЛЯ:
-{request.answer}
-
-КОНТЕКСТ ПРЕДЫДУЩИХ ОТВЕТОВ:
-{context_str}
-
-ЗАДАЧА:
-1. Извлеки из ответа информацию, относящуюся к вопросу
-2. Определи, достаточно ли информации для ответа
-3. Если информации недостаточно - сформулируй уточняющий вопрос в стиле живого менеджера (кратко, дружелюбно, 1 предложение)
-
-ВОЗВРАТИ JSON:
-{{
-  "extracted": {{
-    "mouse_keyboard_skill": "string или null",
-    "programming_experience": "string или null",
-    "child_age": число или null,
-    "child_name": "string или null"
-  }},
-  "needs_clarification": true/false,
-  "clarification_question": "текст вопроса или null"
-}}
-
-ВАЖНО:
-- Если needs_clarification = true, clarification_question должен быть задан как живой менеджер (коротко, дружелюбно, 1 предложение)
-- extracted должен содержать только те поля, которые относятся к текущему вопросу
-- Остальные поля в extracted должны быть null
-- Общайся как менеджер в переписке, а не как LLM"""
+        user_prompt = user_prompt_template.format(
+            question=request.question,
+            answer=request.answer,
+            context=context_str
+        )
         
-        llm = LLMProvider(system_prompt=EXTRACT_SYSTEM_PROMPT)
+        llm = LLMProvider(system_prompt=system_prompt)
         response = llm.process_prompt(user_prompt)
         
         # Парсим JSON из ответа
@@ -143,55 +106,19 @@ async def extract_onboarding(request: OnboardingExtractRequest):
 async def extract_onboarding_all(request: OnboardingExtractRequest):
     """Извлечение всех данных onboarding из одного ответа"""
     try:
-        # Формируем user prompt для всех вопросов сразу
+        # Загружаем промпты из файлов
+        system_prompt = get_extract_system_prompt()
+        user_prompt_template = load_prompt("extract_onboarding_all_user_prompt.txt")
+        
+        # Формируем user prompt
         context_str = json.dumps(request.context, ensure_ascii=False) if request.context else "нет"
         
-        user_prompt = f"""ВОПРОСЫ МЕНЕДЖЕРА:
-1. Насколько уверенно ребенок дружит с мышкой и клавиатурой?
-2. Был ли уже опыт в программировании или робототехнике?
-3. Сколько лет ребенку?
-4. Как зовут ребенка?
-
-ОТВЕТ РОДИТЕЛЯ:
-{request.answer}
-
-УЖЕ ИЗВЛЕЧЕННЫЕ ДАННЫЕ (не спрашивай об этом снова):
-{context_str}
-
-ЗАДАЧА:
-1. Извлеки из ответа ВСЮ доступную информацию по всем 4 вопросам
-2. Объедини с уже извлеченными данными - если данные уже есть в контексте, используй их
-3. Определи, какие данные ОТСУТСТВУЮТ (не задавай вопросы о том, что уже известно)
-4. Если каких-то данных не хватает - сформулируй ОДИН уточняющий вопрос в стиле живого менеджера (кратко, дружелюбно, 1 предложение) только для САМОГО ВАЖНОГО недостающего поля
-
-ПРАВИЛА ИЗВЛЕЧЕНИЯ:
-- child_age: извлекай ТОЛЬКО ВОЗРАСТ (число от 3 до 18 лет). НЕ путай с оценками! Если в ответе есть фразы типа "лет", "года", "год", "возраст" или "моему ребенку X" - это возраст. Если просто число без контекста возраста - это НЕ возраст, это может быть оценка навыка!
-- child_name: извлекай имя (например: "Олег", "меня зовут Олег" = "Олег", "зовут Олег" = "Олег")
-- mouse_keyboard_skill: извлекай уровень (например: "уверенно", "умеет", "дружит", "на 4" = "хорошо", "на 5" = "отлично", "держал в руках" = "начинает", "не умеет" = "не умеет", "средне" = "средне")
-- programming_experience: извлекай опыт (например: "знает питон" = "есть опыт: знает Python", "есть опыт", "нет опыта", "занимался" = "есть опыт: [описание]")
-
-ВОЗВРАТИ JSON:
-{{
-  "extracted": {{
-    "mouse_keyboard_skill": "string или null (используй значение из контекста, если есть)",
-    "programming_experience": "string или null (используй значение из контекста, если есть)",
-    "child_age": число или null (используй значение из контекста, если есть)",
-    "child_name": "string или null (используй значение из контекста, если есть)"
-  }},
-  "needs_clarification": true/false,
-  "clarification_question": "текст ОДНОГО вопроса или null (только для самого важного недостающего поля)"
-}}
-
-КРИТИЧЕСКИ ВАЖНО:
-- ОБЯЗАТЕЛЬНО используй данные из контекста, если они уже есть - НЕ перезаписывай их!
-- Извлекай ВСЕ доступные данные из текущего ответа
-- ВОЗРАСТ - это только числа с контекстом возраста ("лет", "года", "год", "возраст", "моему ребенку X"). Числа без контекста возраста (например "на 4", "на 5") - это ОЦЕНКИ навыка, НЕ возраст!
-- Задавай ТОЛЬКО ОДИН вопрос за раз, для самого важного недостающего поля
-- НЕ задавай вопросы о данных, которые уже есть в контексте
-- Если имя уже есть в контексте - НЕ спрашивай его снова!
-- Если возраст уже есть в контексте - НЕ спрашивай его снова!"""
+        user_prompt = user_prompt_template.format(
+            answer=request.answer,
+            context=context_str
+        )
         
-        llm = LLMProvider(system_prompt=EXTRACT_SYSTEM_PROMPT)
+        llm = LLMProvider(system_prompt=system_prompt)
         response = llm.process_prompt(user_prompt)
         
         # Парсим JSON из ответа

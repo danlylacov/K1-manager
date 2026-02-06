@@ -24,6 +24,9 @@ services:
     container_name: llm-service
     ports:
       - "8002:8002"
+    volumes:
+      # Промпты (если нужно редактировать без пересборки)
+      - ./llm_service/prompts:/app/llm_service/prompts:ro
     environment:
       - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
       - PYTHONUNBUFFERED=1

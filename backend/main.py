@@ -156,12 +156,34 @@ async def query(request: QueryRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
     
+    # Получаем последние 10 сообщений (5 пар вопрос-ответ) для контекста
+    # Исключаем текущий вопрос, получая сообщения до текущего момента
+    recent_messages = db.query(Message).filter(
+        Message.user_id == user.id
+    ).order_by(Message.created_at.desc()).limit(10).all()
+    
+    # Формируем conversation_history в обратном порядке (от старых к новым)
+    conversation_history = []
+    if recent_messages:
+        # Переворачиваем список, чтобы получить хронологический порядок
+        messages_chronological = list(reversed(recent_messages))
+        for msg in messages_chronological:
+            role = "assistant" if msg.is_bot == 1 else "user"
+            conversation_history.append({
+                "role": role,
+                "text": msg.text
+            })
+    
     # Запрос к RAG API
     async with httpx.AsyncClient() as client:
         try:
+            rag_request = {
+                "question": request.question,
+                "conversation_history": conversation_history if conversation_history else None
+            }
             response = await client.post(
                 f"{RAG_API_URL}/query",
-                json={"question": request.question},
+                json=rag_request,
                 timeout=60.0
             )
             response.raise_for_status()
